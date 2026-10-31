@@ -1,0 +1,7 @@
+config.bat
+secrets/
+bad_commit.txt
+seatalk-oapi/
+__pycache__/
+__MACOSX/
+*.pyc

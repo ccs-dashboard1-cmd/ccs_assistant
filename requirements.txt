@@ -1,0 +1,3 @@
+requests
+gspread
+# seatalk_oapi_sdk: pasang dari berkas yang diunduh di halaman SDK portal SeaTalk
