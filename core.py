@@ -15,7 +15,7 @@ log = logging.getLogger("ccs")
 WIB = timezone(timedelta(hours=7))
 CARD_TEXT = "Mohon dibantu cek ya"
 NO_TL_TEXT = "Belum ada TL yang tersedia untuk di-tag saat ini. Mohon ditunggu."
-MAX_TL_PER_THREAD = 5
+MAX_MENTIONS_PER_THREAD = 10  # batas total kartu per thread (putaran ulang berhenti di sini)
 EXPIRE_MINUTES = 40
 
 
@@ -163,6 +163,19 @@ class Bot:
                 return tl
         return None
 
+    def _next_in_rotation(self, st: "ThreadState"):
+        """Putar bergilir: pilih kandidat yang paling sedikit sudah di-mention di thread ini;
+        seri diurutkan menurut urutan daftar. Semua sudah terpakai -> mulai putaran baru dari atas."""
+        cands = self.sheet.read_candidates()
+        if not cands:
+            return None, False
+        counts = {tl: 0 for tl in cands}
+        for _, tl in st.assigned:
+            if tl in counts:
+                counts[tl] += 1
+        best = min(cands, key=lambda tl: (counts[tl], cands.index(tl)))
+        return best, counts[best] >= 1  # True = pengingat (TL ini sudah pernah di-mention)
+
     # ---------- handler event ----------
     def on_event(self, ev, kind: str):
         try:
@@ -236,7 +249,7 @@ class Bot:
                 age = (now - st.last_assigned).total_seconds() / 60
                 if age < limit or age >= EXPIRE_MINUTES:
                     continue
-                if len(st.tl_ids) >= MAX_TL_PER_THREAD:
+                if len(st.assigned) >= MAX_MENTIONS_PER_THREAD:
                     continue
                 due.append(st)
             due.sort(key=lambda s: s.last_assigned)
@@ -250,16 +263,17 @@ class Bot:
         with self.lock:
             if st.acked:
                 return
-            tl = self._next_candidate(st.tl_ids)
+            tl, reminder = self._next_in_rotation(st)
             if tl is None:
                 return
             st.assigned.append((now, tl))  # reservasi
-        if not self.api.send_card(st.group_id, st.thread_id, card_text(tl)):
+        if not self.api.send_card(st.group_id, st.thread_id, card_text(tl, reminder)):
             with self.lock:
                 st.assigned.remove((now, tl))
             return
         self.sheet.append_row([fmt_wib(now), "ASSIGNED", fmt_wib(now), tl, "", "0", st.thread_id, st.group_id])
 
 
-def card_text(tl_id: str) -> str:
-    return f'{CARD_TEXT}, <mention-tag target="seatalk://user?id={tl_id}"/>'
+def card_text(tl_id: str, reminder: bool = False) -> str:
+    head = CARD_TEXT + (" (pengingat)" if reminder else "")
+    return f'{head}, <mention-tag target="seatalk://user?id={tl_id}"/>'

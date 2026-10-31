@@ -97,22 +97,44 @@ class T(unittest.TestCase):
         b.on_event(ev("e2", "2", msg="r", thread="m1", sent=c.t), "thread")
         c.adv(120); b.escalate_tick(); self.assertEqual(len(a.sent), 2)
 
-    def test_escalation_max5_and_expiry(self):
-        b, c, s, a = mk()
+    def test_loop_round_robin_then_reminder(self):
+        b, c, s, a = mk(cands=["1", "2", "3"])
         b.on_event(ev("e1", "900"), "mention")
-        for _ in range(10):
+        for _ in range(5):
             c.adv(61); b.escalate_tick()
-        self.assertEqual(len(a.sent), 5)
+        ids = [x[2].split("id=")[1][:1] for x in a.sent]
+        self.assertEqual(ids, ["1", "2", "3", "1", "2", "3"])
+        self.assertNotIn("pengingat", a.sent[1][2]); self.assertNotIn("pengingat", a.sent[2][2])
+        self.assertIn("pengingat", a.sent[3][2])
+
+    def test_loop_stops_at_cap_and_expiry(self):
+        import core
+        b, c, s, a = mk(cands=["1", "2", "3"])
+        b.on_event(ev("e1", "900"), "mention")
+        for _ in range(30):
+            c.adv(61); b.escalate_tick()
+        self.assertEqual(len(a.sent), core.MAX_MENTIONS_PER_THREAD)
         b2, c2, s2, a2 = mk()
         b2.on_event(ev("e1", "900"), "mention")
         c2.adv(41 * 60); b2.escalate_tick(); self.assertEqual(len(a2.sent), 1)
 
-    def test_escalation_skips_used_and_inactive(self):
+    def test_loop_stops_after_ack_in_later_round(self):
+        b, c, s, a = mk(cands=["1", "2"])
+        b.on_event(ev("e1", "900"), "mention")
+        for _ in range(3):
+            c.adv(61); b.escalate_tick()
+        self.assertEqual(len(a.sent), 4)
+        b.on_event(ev("e2", "1", msg="r", thread="m1", sent=c.t), "thread")
+        c.adv(300); b.escalate_tick(); self.assertEqual(len(a.sent), 4)
+        self.assertEqual(len([r for r in s.rows if r[1] == "ACK_LOGGED"]), 1)
+
+    def test_rotation_skips_inactive_then_loops(self):
         b, c, s, a = mk(cands=["1", "3"])
         b.on_event(ev("e1", "900"), "mention")
         c.adv(61); b.escalate_tick()
         self.assertIn("id=3", a.sent[1][2])
-        c.adv(61); b.escalate_tick(); self.assertEqual(len(a.sent), 2)
+        c.adv(61); b.escalate_tick(); self.assertEqual(len(a.sent), 3)
+        self.assertIn("id=1", a.sent[2][2]); self.assertIn("pengingat", a.sent[2][2])
 
     def test_restart_reloads_state(self):
         b, c, s, a = mk()
