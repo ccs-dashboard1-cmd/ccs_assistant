@@ -157,16 +157,10 @@ class Bot:
         self._tl_cache = (ids, now)
         return ids
 
-    def _next_candidate(self, exclude: set):
-        for tl in self.sheet.read_candidates():
-            if tl not in exclude:
-                return tl
-        return None
-
-    def _next_in_rotation(self, st: "ThreadState"):
+    def _next_in_rotation(self, st: "ThreadState", cands: list):
         """Putar bergilir: pilih kandidat yang paling sedikit sudah di-mention di thread ini;
-        seri diurutkan menurut urutan daftar. Semua sudah terpakai -> mulai putaran baru dari atas."""
-        cands = self.sheet.read_candidates()
+        seri diurutkan menurut urutan daftar. Semua sudah terpakai -> mulai putaran baru dari atas.
+        `cands` dibaca dari Sheet DI LUAR lock (pembacaan Sheet bisa lambat)."""
         if not cands:
             return None, False
         counts = {tl: 0 for tl in cands}
@@ -205,14 +199,26 @@ class Bot:
             st = self.threads.get(key)
             if st and st.assigned:
                 return  # sudah ditugaskan (anti duplikat)
-            tl = self._next_candidate(set())
+        cands = self.sheet.read_candidates()  # I/O lambat: JANGAN di dalam lock
+        with self.lock:
+            st = self.threads.get(key)
+            if st and st.assigned:
+                return  # event lain sudah menugaskan selagi Sheet dibaca
+            if not cands:
+                tl = None
+            else:
+                tl = cands[0]
             if tl is None:
-                self.api.send_card(inc.group_id, inc.thread_key, NO_TL_TEXT)
-                return
-            # reservasi dulu di memori agar event ganda tidak lolos
-            st = self.threads.setdefault(key, ThreadState(inc.group_id, inc.thread_key))
-            now = self.clock()
-            st.assigned.append((now, tl))
+                send_no_tl = True
+            else:
+                send_no_tl = False
+                # reservasi dulu di memori agar event ganda tidak lolos
+                st = self.threads.setdefault(key, ThreadState(inc.group_id, inc.thread_key))
+                now = self.clock()
+                st.assigned.append((now, tl))
+        if send_no_tl:
+            self.api.send_card(inc.group_id, inc.thread_key, NO_TL_TEXT)
+            return
         ok = self.api.send_card(inc.group_id, inc.thread_key, card_text(tl))
         if not ok:
             with self.lock:  # kartu gagal: batalkan agar bisa dicoba lagi
@@ -263,9 +269,14 @@ class Bot:
         with self.lock:
             if st.acked:
                 return
-            tl, reminder = self._next_in_rotation(st)
+        cands = self.sheet.read_candidates()  # I/O lambat: di luar lock agar balasan TL tidak tertahan
+        with self.lock:
+            if st.acked:  # TL membalas selagi Sheet dibaca -> batalkan, jangan kirim kartu
+                return
+            tl, reminder = self._next_in_rotation(st, cands)
             if tl is None:
                 return
+            now = self.clock()  # waktu SEBENARNYA kartu dikirim (bukan awal tick)
             st.assigned.append((now, tl))  # reservasi
         if not self.api.send_card(st.group_id, st.thread_id, card_text(tl, reminder)):
             with self.lock:

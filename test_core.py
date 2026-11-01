@@ -136,6 +136,35 @@ class T(unittest.TestCase):
         c.adv(61); b.escalate_tick(); self.assertEqual(len(a.sent), 3)
         self.assertIn("id=1", a.sent[2][2]); self.assertIn("pengingat", a.sent[2][2])
 
+    def test_ack_during_slow_sheet_read_cancels_reminder(self):
+        """Kasus nyata: TL membalas saat bot sedang membaca Sheet untuk kartu pengingat."""
+        b, c, s, a = mk()
+        b.on_event(ev("e1", "900"), "mention")          # kartu ke TL 1
+        c.adv(70)                                        # lewat batas (limit=1 menit)
+        orig = s.read_candidates
+        def slow_read():
+            # selagi Sheet dibaca, TL 2 membalas di thread
+            b.on_event(ev("e2", "2", msg="m2", thread="m1", sent=c.t), "thread")
+            return orig()
+        s.read_candidates = slow_read
+        b.escalate_tick()
+        self.assertEqual(len(a.sent), 1)                 # tidak ada kartu pengingat
+        self.assertEqual([r[1] for r in s.rows], ["ASSIGNED", "ACK_LOGGED"])
+
+    def test_escalation_timestamp_is_send_time(self):
+        b, c, s, a = mk()
+        b.on_event(ev("e1", "900"), "mention")
+        c.adv(70)
+        orig = s.read_candidates
+        def slow_read():
+            c.adv(100)                                   # Sheet lambat 100 detik
+            return orig()
+        s.read_candidates = slow_read
+        b.escalate_tick()
+        self.assertEqual(len(a.sent), 2)
+        self.assertEqual(s.rows[1][0], s.rows[1][2])
+        self.assertIn("T10:02:50", s.rows[1][0])         # 10:00:00 + 70 + 100 detik
+
     def test_restart_reloads_state(self):
         b, c, s, a = mk()
         s.log = [["2026-10-31T10:00:00+07:00", "ASSIGNED", "x", "1", "", "0", "m1", "G"]]
