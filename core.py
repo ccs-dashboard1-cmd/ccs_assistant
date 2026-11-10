@@ -52,6 +52,10 @@ _STOP = (r"Data\s*(?:Complaint|User)", r"Username[^:\n]*", r"Nomor\s*Pesanan[^:\
 # label pembatas yang menempel di tengah baris (mis. "...hasil tim kak Data User: Username Sosmed: x"): potong dari situ
 _CUT = re.compile(r"\s*\b(?:Data\s*(?:Complaint|User)\s*:|Username\s*\w*\s*:|Nomor\s*Pesanan[^:\n]*:).*$", re.I)
 MAX_FIELD_CHARS = 1500
+# awalan di depan label yang diabaikan: spasi, tanda -, –, —, •, *, >, atau penomoran "1." / "2)"
+_LEAD = r"[ \t]*(?:[-\u2013\u2014\u2022*>\u00b7]+|\d+[.)])?[ \t]*"
+_IDS = ("session_id", "case_id", "related_case")  # berisi nomor panjang; teks tambahan dibuang
+_NUM = re.compile(r"\d{10,}")
 
 
 def parse_case(text: str) -> dict:
@@ -59,8 +63,8 @@ def parse_case(text: str) -> dict:
     Label Data Complaint/Data User/Username (Shopee/Sosmed)/Nomor Pesanan-Resi hanya jadi pembatas dan TIDAK disimpan.
     parse_status (OK/PARTIAL/NO_TEMPLATE) hanya dihitung dari 5 field inti."""
     out = {k: "" for k, _ in CASE_FIELDS}
-    pats = [(k, re.compile(rf"^[ \t]*{p}[ \t]*:[ \t]*(.*)$", re.I)) for k, p in CASE_FIELDS]
-    stops = [re.compile(rf"^[ \t]*{p}[ \t]*(:.*)?$", re.I) for p in _STOP]
+    pats = [(k, re.compile(rf"^{_LEAD}{p}[ \t]*:[ \t]*(.*)$", re.I)) for k, p in CASE_FIELDS]
+    stops = [re.compile(rf"^{_LEAD}{p}[ \t]*(:.*)?$", re.I) for p in _STOP]
     cur, buf = None, []
 
     def flush():
@@ -78,6 +82,10 @@ def parse_case(text: str) -> dict:
         elif cur:
             buf.append(line.strip())
     flush()
+    for k in _IDS:  # "Sesi: 2121…546 / 10 November, 18:02:59." -> "2121…546"; "-" / teks tanpa nomor dibiarkan
+        nums = _NUM.findall(out[k])
+        if nums:
+            out[k] = ", ".join(nums)
     if not out["hc"]:
         m = re.search(r"(?i)\bHCP\s*\d+\b", text or "")
         if m:

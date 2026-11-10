@@ -273,6 +273,33 @@ class TCase(unittest.TestCase):
         c = parse_case("Action Taken : tindak lanjut\nTerima Kasih")
         self.assertEqual(c["action"], "tindak lanjut")
 
+    def test_agent_pakai_tanda_strip_di_depan_label(self):
+        from core import parse_case
+        txt = ("Hi Team @CCS Assistant Mohon bantuan arahan lebih lanjut untuk kendala\n\n"
+               "-L3 Reason Code: Kendala Seputar Pengiriman Kilat\n"
+               "-Session ID:Sesi: 2121009963597676546 / 10 November, 18:02:59.\n"
+               "-Case ID:2120109992141058147\n-Related Case:2120061702372532285\n-HC: HCP1SocialMedia\n"
+               "-Issue/Summary: user terkendala dengan keluhkan alur kas\ndiminta terus mengikis di DM agent KS\n"
+               "-Action Taken: izin probing username Kak\n\nData User:\n-Username Sosmed:-\n-Username Shopee:-\n"
+               "-Nomor Pesanan / Nomor Resi:-\n\nTerima Kasih")
+        c = parse_case(txt)
+        self.assertEqual(c["l3_reason_code"], "Kendala Seputar Pengiriman Kilat")
+        self.assertEqual((c["session_id"], c["case_id"], c["related_case"]),
+                         ("2121009963597676546", "2120109992141058147", "2120061702372532285"))
+        self.assertEqual(c["hc"], "HCP1SocialMedia")
+        self.assertEqual(c["issue"], "user terkendala dengan keluhkan alur kas diminta terus mengikis di DM agent KS")
+        self.assertEqual(c["action"], "izin probing username Kak")
+        self.assertEqual(c["parse_status"], "OK")
+
+    def test_varian_awalan_dan_nilai_strip(self):
+        from core import parse_case
+        c = parse_case("• L3 Reason Code : A\n1. Session ID : -\n2) Case ID:-\n* Related Case : -\n> HC : HCP2\n– Action Taken : x")
+        self.assertEqual((c["l3_reason_code"], c["session_id"], c["case_id"], c["related_case"], c["hc"], c["action"]),
+                         ("A", "-", "-", "-", "HCP2", "x"))
+        self.assertEqual(c["parse_status"], "OK")
+        c = parse_case("Related Case : 2120061702372532285, 2119803032704213020")
+        self.assertEqual(c["related_case"], "2120061702372532285, 2119803032704213020")
+
     def test_multiline_issue_and_action(self):
         from core import parse_case
         c = parse_case("L3 Reason Code : X\nIssue/Summary : baris satu\nlanjut baris dua\n\nlanjut tiga\n"
