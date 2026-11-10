@@ -1,7 +1,7 @@
 # CCS Assistant (Python, tanpa LLM) - app 41006
 
 Alur sama dengan bot Smart: manusia non-TL menyapa bot -> kartu "Mohon dibantu cek ya, @TL" + baris ASSIGNED;
-setiap tag baru juga dicatat ke tab `CASE_LOG` (L3 Reason Code, Issue, Action, Session ID, Case ID, Related Case, HC; 15 kolom A-O);
+setiap tag baru langsung dicatat ke tab `CASE_LOG` saat agen mention bot, sekali per thread, walau tidak ada TL / kartu gagal (L3 Reason Code, Issue, Action, Session ID, Case ID, Related Case, HC; 13 kolom A-M);
 TL membalas di thread -> baris ACK_LOGGED; tanpa respons dalam `PILIH TL!B15` menit -> eskalasi ke TL berikutnya
 (maks 10 mention/thread, kedaluwarsa 40 menit). Pengecekan eskalasi tiap 15 detik.
 
@@ -18,7 +18,7 @@ TL membalas di thread -> baris ACK_LOGGED; tanpa respons dalam `PILIH TL!B15` me
    dan langganan event *New Mentioned Message From Group Chat* + *New Message Received from Thread*.
 7. Matikan/bedakan dulu bot Smart (skill/jadwal) agar tidak ada kartu ganda di grup yang sama.
 
-Tes logika: `python -m unittest -v test_core` (25 tes, tanpa jaringan).
+Tes logika: `python -m unittest -v test_core` (28 tes, tanpa jaringan).
 
 ## Catatan
 - Komunikasi dengan SeaTalk/Google belum bisa saya uji dari sini (butuh kredensial Anda); logika inti sudah diuji dengan data tiruan.

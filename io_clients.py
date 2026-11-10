@@ -101,15 +101,6 @@ class Sheet:
     def append_case(self, row):
         self.q.put((self.case_ws, [str(c) for c in row]))
 
-    def read_tl_names(self):
-        """{SeaTalk ID: nama} dari LIST TL & JOBDESK (B=Name, D=Seatalk ID)."""
-        out = {}
-        for r in self.list_ws.get("B2:D13"):
-            r = list(r) + [""] * (3 - len(r))
-            if str(r[2]).strip():
-                out[str(r[2]).strip()] = str(r[0]).strip()
-        return out
-
     def read_candidates(self):
         rows = self.pilih.get("B5:E9")
         out = []

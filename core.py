@@ -162,6 +162,7 @@ class Bot:
         self.lock = threading.RLock()
         self._tl_cache = (None, None)
         self._tl_ttl = tl_cache_seconds
+        self.logged_cases: OrderedDict = OrderedDict()  # thread yang sudah dicatat ke CASE_LOG (anti dobel)
 
     # ---------- state ----------
     def load_state(self):
@@ -246,6 +247,13 @@ class Bot:
             st = self.threads.get(key)
             if st and st.assigned:
                 return  # sudah ditugaskan (anti duplikat)
+            first = key not in self.logged_cases
+            if first:
+                self.logged_cases[key] = 1
+                while len(self.logged_cases) > 5000:
+                    self.logged_cases.popitem(last=False)
+        if first:
+            self._log_case(inc, self.clock())  # catat DULU, apa pun nasib kartunya
         cands = self.sheet.read_candidates()  # I/O lambat: JANGAN di dalam lock
         with self.lock:
             st = self.threads.get(key)
@@ -273,22 +281,17 @@ class Bot:
             log.warning("kartu gagal terkirim, tidak dicatat")
             return
         self.sheet.append_row([fmt_wib(now), "ASSIGNED", fmt_wib(now), tl, "", "0", inc.thread_key, inc.group_id])
-        self._log_case(inc, now, tl)
 
-    def _log_case(self, inc: Incoming, now: datetime, tl: str):
-        """Catat 5 field template ke CASE_LOG. Kegagalan di sini TIDAK boleh mengganggu alur utama."""
+    def _log_case(self, inc: Incoming, now: datetime):
+        """Catat isi template ke CASE_LOG (A-M). Kegagalan di sini TIDAK boleh mengganggu alur utama."""
         try:
             c = parse_case(inc.text)
-            try:
-                tl_name = self.sheet.read_tl_names().get(str(tl), "")
-            except Exception:
-                tl_name = ""
             self.sheet.append_case([
                 fmt_wib(now), inc.thread_key, inc.group_id, inc.sender_id,   # A-D
                 c["l3_reason_code"], c["issue"], c["action"],                # E-G
-                inc.sender_email, str(tl), tl_name,                          # H-J
-                c["session_id"], c["case_id"], c["related_case"], c["hc"],   # K-N
-                c["parse_status"]])                                          # O
+                inc.sender_email,                                            # H
+                c["session_id"], c["case_id"], c["related_case"], c["hc"],   # I-L
+                c["parse_status"]])                                          # M
         except Exception:
             log.exception("catat CASE_LOG gagal (diabaikan)")
 

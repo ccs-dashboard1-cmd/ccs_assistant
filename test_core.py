@@ -18,7 +18,6 @@ class FakeSheet:
     def read_limit_minutes(s): return s.limit
     def append_row(s, r): s.rows.append(r)
     def append_case(s, r): s.cases.append(r)
-    def read_tl_names(s): return {"1": "TL Satu"}
     def load_log(s): return s.log
 
 class FakeApi:
@@ -206,16 +205,36 @@ class TCase(unittest.TestCase):
         self.assertEqual(parse_case("halo tolong bantu")["parse_status"], "NO_TEMPLATE")
         self.assertEqual(parse_case("kendala hcp 3 nih")["hc"], "HCP3")
 
-    def test_case_logged_on_assignment(self):
+    def test_case_logged_on_mention(self):
         b, c, s, a = mk()
         b.on_event(ev("e1", "900", text=TPL, email="a.b@shopee.com"), "mention")
         self.assertEqual(len(s.cases), 1)
         r = s.cases[0]
-        self.assertEqual(len(r), 15)
+        self.assertEqual(len(r), 13)
         self.assertEqual(r[1:4], ["m1", "G", "900"])
         self.assertEqual(r[4:7], ["Pickup Delay", "paket belum diambil", ""])      # E L3, F Issue, G Action
-        self.assertEqual(r[7:10], ["a.b@shopee.com", "1", "TL Satu"])               # H email, I tl id, J tl name
-        self.assertEqual(r[10:], ["S123", "C456", "C111", "HCP3", "OK"])            # K..O
+        self.assertEqual(r[7], "a.b@shopee.com")                                    # H email
+        self.assertEqual(r[8:], ["S123", "C456", "C111", "HCP3", "OK"])            # I..M
+
+    def test_case_logged_even_when_no_tl(self):
+        b, c, s, a = mk(cands=())
+        b.on_event(ev("e1", "900", text=TPL), "mention")
+        self.assertEqual(len(s.cases), 1); self.assertEqual(s.rows, [])
+        self.assertEqual(len(a.sent), 1)  # balasan "tidak ada TL"
+
+    def test_case_logged_even_when_card_fails(self):
+        b, c, s, a = mk()
+        a.ok = False
+        b.on_event(ev("e1", "900", text=TPL), "mention")
+        self.assertEqual(len(s.cases), 1); self.assertEqual(s.rows, [])
+
+    def test_case_logged_once_per_thread_across_retries(self):
+        b, c, s, a = mk()
+        a.ok = False
+        b.on_event(ev("e1", "900", text=TPL), "mention")
+        a.ok = True
+        b.on_event(ev("e2", "900", text=TPL), "mention")   # event baru, thread sama (kartu gagal tadi dicoba lagi)
+        self.assertEqual(len(s.cases), 1); self.assertEqual(len(s.rows), 1)
 
     def test_case_log_failure_does_not_break_flow(self):
         b, c, s, a = mk()
@@ -230,7 +249,6 @@ class TCase(unittest.TestCase):
         b.on_event(ev("e1", "900", text=TPL), "mention")
         b.on_event(ev("e2", "1", msg="m2", thread="m1", text=TPL), "thread")
         self.assertEqual(len(s.cases), 1)
-
 
     def test_multiline_issue_and_action(self):
         from core import parse_case
