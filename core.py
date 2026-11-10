@@ -5,6 +5,7 @@ Semua I/O (SeaTalk, Google Sheet, jam) disuntikkan sehingga bisa diuji.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -42,6 +43,48 @@ def get(obj, *names, default=""):
     return default if obj is None else obj
 
 
+CASE_FIELDS = (("l3_reason_code", r"L3\s*Reason\s*Code"), ("session_id", r"Session\s*ID"),
+               ("case_id", r"Case\s*ID"), ("related_case", r"Related\s*Case"), ("hc", r"HC"),
+               ("issue", r"Issue\s*/?\s*Summary"), ("action", r"Action\s*Taken"))
+CORE_KEYS = ("l3_reason_code", "session_id", "case_id", "related_case", "hc")  # menentukan parse_status
+# Label lain: hanya sebagai PEMBATAS (isinya tidak disimpan)
+_STOP = (r"Data\s*Complaint", r"Username\s*Shopee", r"Nomor\s*Pesanan[^:\n]*", r"Thank\s*You")
+MAX_FIELD_CHARS = 1500
+
+
+def parse_case(text: str) -> dict:
+    """Ambil field template Agent. Nilai bisa lebih dari satu baris (diambil sampai label berikutnya).
+    Label Data Complaint/Username/Nomor Pesanan-Resi hanya jadi pembatas dan TIDAK disimpan.
+    parse_status (OK/PARTIAL/NO_TEMPLATE) hanya dihitung dari 5 field inti."""
+    out = {k: "" for k, _ in CASE_FIELDS}
+    pats = [(k, re.compile(rf"^[ \t]*{p}[ \t]*:[ \t]*(.*)$", re.I)) for k, p in CASE_FIELDS]
+    stops = [re.compile(rf"^[ \t]*{p}[ \t]*(:.*)?$", re.I) for p in _STOP]
+    cur, buf = None, []
+
+    def flush():
+        if cur and not out[cur]:
+            out[cur] = " ".join(x for x in buf if x).strip()[:MAX_FIELD_CHARS]
+
+    for line in (text or "").replace("\r", "").split("\n"):
+        hit = next(((k, m.group(1).strip()) for k, rx in pats for m in [rx.match(line)] if m), None)
+        if hit:
+            flush()
+            cur, buf = hit[0], [hit[1]]
+        elif any(rx.match(line) for rx in stops):
+            flush()
+            cur, buf = None, []
+        elif cur:
+            buf.append(line.strip())
+    flush()
+    if not out["hc"]:
+        m = re.search(r"(?i)\bHCP\s*\d+\b", text or "")
+        if m:
+            out["hc"] = m.group(0).replace(" ", "").upper()
+    filled = sum(1 for k in CORE_KEYS if out[k])
+    out["parse_status"] = "NO_TEMPLATE" if filled == 0 else ("OK" if filled == len(CORE_KEYS) else "PARTIAL")
+    return out
+
+
 @dataclass
 class Incoming:
     event_id: str
@@ -52,6 +95,8 @@ class Incoming:
     sender_type: int  # 1 user, 2 bot, 3 system; 0 = tidak diketahui
     sent_at: datetime
     kind: str  # "mention" atau "thread"
+    text: str = ""  # teks pesan (untuk CASE_LOG)
+    sender_email: str = ""  # email pengirim (untuk CASE_LOG)
 
     @property
     def thread_key(self) -> str:
@@ -76,6 +121,8 @@ def normalize(ev, kind: str, now: datetime) -> Incoming:
         sender_type=int(get(m, "sender", "sender_type", default=0) or 0),
         sent_at=sent_dt,
         kind=kind,
+        text=str(get(m, "text", "plain_text")),
+        sender_email=str(get(m, "sender", "email")).strip(),
     )
 
 
@@ -226,6 +273,24 @@ class Bot:
             log.warning("kartu gagal terkirim, tidak dicatat")
             return
         self.sheet.append_row([fmt_wib(now), "ASSIGNED", fmt_wib(now), tl, "", "0", inc.thread_key, inc.group_id])
+        self._log_case(inc, now, tl)
+
+    def _log_case(self, inc: Incoming, now: datetime, tl: str):
+        """Catat 5 field template ke CASE_LOG. Kegagalan di sini TIDAK boleh mengganggu alur utama."""
+        try:
+            c = parse_case(inc.text)
+            try:
+                tl_name = self.sheet.read_tl_names().get(str(tl), "")
+            except Exception:
+                tl_name = ""
+            self.sheet.append_case([
+                fmt_wib(now), inc.thread_key, inc.group_id, inc.sender_id,   # A-D
+                c["l3_reason_code"], c["issue"], c["action"],                # E-G
+                inc.sender_email, str(tl), tl_name,                          # H-J
+                c["session_id"], c["case_id"], c["related_case"], c["hc"],   # K-N
+                c["parse_status"]])                                          # O
+        except Exception:
+            log.exception("catat CASE_LOG gagal (diabaikan)")
 
     def _handle_tl(self, inc: Incoming, key):
         with self.lock:

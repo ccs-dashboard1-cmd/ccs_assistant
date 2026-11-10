@@ -12,10 +12,13 @@ class Clock:
 class FakeSheet:
     def __init__(s, cands=("1", "2", "3", "4", "5", "6"), tls=("1", "2", "3", "4", "5", "6"), limit=1):
         s.cands, s.tls, s.limit, s.rows, s.log = list(cands), list(tls), limit, [], []
+        s.cases = []
     def read_candidates(s): return list(s.cands)
     def read_tl_ids(s): return list(s.tls)
     def read_limit_minutes(s): return s.limit
     def append_row(s, r): s.rows.append(r)
+    def append_case(s, r): s.cases.append(r)
+    def read_tl_names(s): return {"1": "TL Satu"}
     def load_log(s): return s.log
 
 class FakeApi:
@@ -24,9 +27,9 @@ class FakeApi:
         if s.ok: s.sent.append((g, t, text))
         return s.ok
 
-def ev(eid, sender, msg="m1", thread="", group="G", sent=None, stype=1):
-    m = {"message_id": msg, "thread_id": thread, "sender": {"seatalk_id": sender, "sender_type": stype},
-         "message_sent_time": int((sent or T0).timestamp())}
+def ev(eid, sender, msg="m1", thread="", group="G", sent=None, stype=1, text="", email=""):
+    m = {"message_id": msg, "thread_id": thread, "sender": {"seatalk_id": sender, "sender_type": stype, "email": email},
+         "message_sent_time": int((sent or T0).timestamp()), "text": {"plain_text": text}}
     return {"event_id": eid, "event": {"group_id": group, "message": m}}
 
 def mk(**kw):
@@ -178,6 +181,69 @@ class T(unittest.TestCase):
         b.on_event(ev("e1", "900", group="G1"), "mention")
         b.on_event(ev("e2", "900", group="G2"), "mention")
         self.assertEqual(len(a.sent), 2)
+
+TPL = ("Hi Team @CCS Assistant, Mohon bantuan arahan lebih lanjut untuk kendala\n\n"
+       "L3 Reason Code : Pickup Delay\nSession ID : S123\nCase ID : C456\nRelated Case : C111\nHC : HCP3\n"
+       "Issue/Summary : paket belum diambil\nAction Taken :\n\nData Complaint\nUsername Shopee : budi\n"
+       "Nomor Pesanan / Nomor Resi : SPX999\n\nThank You")
+
+class TCase(unittest.TestCase):
+    def test_parse_full_template(self):
+        from core import parse_case
+        c = parse_case(TPL)
+        self.assertEqual((c["l3_reason_code"], c["session_id"], c["case_id"], c["related_case"], c["hc"], c["parse_status"]),
+                         ("Pickup Delay", "S123", "C456", "C111", "HCP3", "OK"))
+        self.assertEqual((c["issue"], c["action"]), ("paket belum diambil", ""))
+        self.assertNotIn("budi", str(c)); self.assertNotIn("SPX999", str(c))
+
+    def test_parse_partial_empty_value_does_not_swallow_next_label(self):
+        from core import parse_case
+        c = parse_case("L3 Reason Code :\nSession ID : S1\nCase ID :\nHC : HCP1")
+        self.assertEqual((c["l3_reason_code"], c["session_id"], c["case_id"], c["hc"], c["parse_status"]), ("", "S1", "", "HCP1", "PARTIAL"))
+
+    def test_parse_no_template_and_hc_fallback(self):
+        from core import parse_case
+        self.assertEqual(parse_case("halo tolong bantu")["parse_status"], "NO_TEMPLATE")
+        self.assertEqual(parse_case("kendala hcp 3 nih")["hc"], "HCP3")
+
+    def test_case_logged_on_assignment(self):
+        b, c, s, a = mk()
+        b.on_event(ev("e1", "900", text=TPL, email="a.b@shopee.com"), "mention")
+        self.assertEqual(len(s.cases), 1)
+        r = s.cases[0]
+        self.assertEqual(len(r), 15)
+        self.assertEqual(r[1:4], ["m1", "G", "900"])
+        self.assertEqual(r[4:7], ["Pickup Delay", "paket belum diambil", ""])      # E L3, F Issue, G Action
+        self.assertEqual(r[7:10], ["a.b@shopee.com", "1", "TL Satu"])               # H email, I tl id, J tl name
+        self.assertEqual(r[10:], ["S123", "C456", "C111", "HCP3", "OK"])            # K..O
+
+    def test_case_log_failure_does_not_break_flow(self):
+        b, c, s, a = mk()
+        def boom(r): raise RuntimeError("x")
+        s.append_case = boom
+        b.on_event(ev("e1", "900", text=TPL), "mention")
+        self.assertEqual(len(a.sent), 1); self.assertEqual(len(s.rows), 1)
+
+    def test_no_case_row_for_duplicate_or_tl_reply(self):
+        b, c, s, a = mk()
+        b.on_event(ev("e1", "900", text=TPL), "mention")
+        b.on_event(ev("e1", "900", text=TPL), "mention")
+        b.on_event(ev("e2", "1", msg="m2", thread="m1", text=TPL), "thread")
+        self.assertEqual(len(s.cases), 1)
+
+
+    def test_multiline_issue_and_action(self):
+        from core import parse_case
+        c = parse_case("L3 Reason Code : X\nIssue/Summary : baris satu\nlanjut baris dua\n\nlanjut tiga\n"
+                       "Action Taken : eskalasi ke ID - SWAT\nCS - HCP1\n\nData Complaint\nUsername Shopee : budi\nThank You")
+        self.assertEqual(c["issue"], "baris satu lanjut baris dua lanjut tiga")
+        self.assertEqual(c["action"], "eskalasi ke ID - SWAT CS - HCP1")
+        self.assertNotIn("budi", str(c)); self.assertNotIn("Thank", str(c))
+
+    def test_status_ignores_issue_action(self):
+        from core import parse_case
+        self.assertEqual(parse_case("Issue/Summary : a\nAction Taken : b")["parse_status"], "NO_TEMPLATE")
+
 
 if __name__ == "__main__":
     unittest.main()

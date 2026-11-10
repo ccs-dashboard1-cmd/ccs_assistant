@@ -1,8 +1,9 @@
 # CCS Assistant (Python, tanpa LLM) - app 41006
 
 Alur sama dengan bot Smart: manusia non-TL menyapa bot -> kartu "Mohon dibantu cek ya, @TL" + baris ASSIGNED;
+setiap tag baru juga dicatat ke tab `CASE_LOG` (L3 Reason Code, Issue, Action, Session ID, Case ID, Related Case, HC; 15 kolom A-O);
 TL membalas di thread -> baris ACK_LOGGED; tanpa respons dalam `PILIH TL!B15` menit -> eskalasi ke TL berikutnya
-(maks 5 TL/thread, kedaluwarsa 40 menit). Pengecekan eskalasi tiap 15 detik.
+(maks 10 mention/thread, kedaluwarsa 40 menit). Pengecekan eskalasi tiap 15 detik.
 
 ## Yang perlu Anda siapkan (rahasia jangan dikirim ke chat)
 1. Portal SeaTalk app 41006: aktifkan **Bot**, beri izin *Send Message to Group Chat*, tambahkan bot ke grup.
@@ -17,9 +18,12 @@ TL membalas di thread -> baris ACK_LOGGED; tanpa respons dalam `PILIH TL!B15` me
    dan langganan event *New Mentioned Message From Group Chat* + *New Message Received from Thread*.
 7. Matikan/bedakan dulu bot Smart (skill/jadwal) agar tidak ada kartu ganda di grup yang sama.
 
-Tes logika: `python -m unittest -v test_core` (13 tes, tanpa jaringan).
+Tes logika: `python -m unittest -v test_core` (25 tes, tanpa jaringan).
 
 ## Catatan
 - Komunikasi dengan SeaTalk/Google belum bisa saya uji dari sini (butuh kredensial Anda); logika inti sudah diuji dengan data tiruan.
 - Nama method SDK diambil dari dokumentasi; bila SDK yang diunduh berbeda, hanya `main.py` yang perlu disesuaikan.
 - Kartu dikirim dulu, baris sheet ditulis di latar belakang (dengan retry) agar cepat.
+
+## Jangan pernah di-commit
+`config.bat`, `secrets/key.json`, folder `seatalk-oapi/`, berkas .zip cadangan. (Sudah ada di `.gitignore`, kecuali .zip: jangan taruh di folder ini.)

@@ -73,18 +73,19 @@ class Sheet:
         import gspread
         self.gc = gspread.service_account(filename=creds_path)
         self.sh = self.gc.open_by_key(spreadsheet_id)
-        self.log_ws = self.sh.worksheet("ASSIST_LOG")
+        self.log_ws = self.sh.worksheet(os.environ.get("ASSIST_LOG_TAB", "ASSIST_LOG"))
         self.pilih = self.sh.worksheet("PILIH TL")
         self.list_ws = self.sh.worksheet("LIST TL & JOBDESK")
+        self.case_ws = self.sh.worksheet("CASE_LOG")
         self.q: queue.Queue = queue.Queue()
         threading.Thread(target=self._writer, daemon=True, name="sheet-writer").start()
 
     def _writer(self):
         while True:
-            row = self.q.get()
+            ws, row = self.q.get()
             for attempt in range(5):
                 try:
-                    self.log_ws.append_row(row, value_input_option="RAW",
+                    ws.append_row(row, value_input_option="RAW",
                                            insert_data_option="INSERT_ROWS",
                                            table_range="A1")
                     break
@@ -95,7 +96,19 @@ class Sheet:
                 log.error("BARIS HILANG, catat manual: %s", row)
 
     def append_row(self, row):
-        self.q.put([str(c) for c in row])
+        self.q.put((self.log_ws, [str(c) for c in row]))
+
+    def append_case(self, row):
+        self.q.put((self.case_ws, [str(c) for c in row]))
+
+    def read_tl_names(self):
+        """{SeaTalk ID: nama} dari LIST TL & JOBDESK (B=Name, D=Seatalk ID)."""
+        out = {}
+        for r in self.list_ws.get("B2:D13"):
+            r = list(r) + [""] * (3 - len(r))
+            if str(r[2]).strip():
+                out[str(r[2]).strip()] = str(r[0]).strip()
+        return out
 
     def read_candidates(self):
         rows = self.pilih.get("B5:E9")
