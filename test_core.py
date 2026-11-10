@@ -250,6 +250,29 @@ class TCase(unittest.TestCase):
         b.on_event(ev("e2", "1", msg="m2", thread="m1", text=TPL), "thread")
         self.assertEqual(len(s.cases), 1)
 
+    def test_data_user_and_username_sosmed_not_in_action(self):
+        from core import parse_case
+        c = parse_case("L3 Reason Code : X\nIssue/Summary : i\nAction Taken : izin linking dan edu hasil tim kak\nData User: Username Sosmed: kesha_ayres\nThank You")
+        self.assertEqual(c["action"], "izin linking dan edu hasil tim kak")
+        c = parse_case("L3 Reason Code : X\nAction Taken : izin linking dan edu hasil tim kak Data User: Username Sosmed: kesha_ayres")
+        self.assertEqual(c["action"], "izin linking dan edu hasil tim kak")
+        c = parse_case("Action Taken : cek data user tidak sesuai, minta data username baru")
+        self.assertEqual(c["action"], "cek data user tidak sesuai, minta data username baru")
+
+    def test_template_terbaru_terima_kasih(self):
+        from core import parse_case
+        txt = ("Hi Team @CCS Assistant, Mohon bantuan arahan lebih lanjut untuk kendala\n\n"
+               "L3 Reason Code : Withdrawal is not received in bank account\nSession ID : -\nCase ID : 2119711512482476111\n"
+               "Related Case : -\nHC : #HCP1SocialMedia\nIssue/Summary : user terkendala transfer\n"
+               "Action Taken : apakah bisa dibantu treat eskalasi ke ID - SWAT CS - HCP1\n\n"
+               "Data User\nUsername Shopee : -\nNomor Pesanan / Nomor Resi : -\n\nTerima Kasih")
+        c = parse_case(txt)
+        self.assertEqual(c["action"], "apakah bisa dibantu treat eskalasi ke ID - SWAT CS - HCP1")
+        self.assertEqual((c["l3_reason_code"], c["case_id"], c["session_id"], c["parse_status"]),
+                         ("Withdrawal is not received in bank account", "2119711512482476111", "-", "OK"))
+        c = parse_case("Action Taken : tindak lanjut\nTerima Kasih")
+        self.assertEqual(c["action"], "tindak lanjut")
+
     def test_multiline_issue_and_action(self):
         from core import parse_case
         c = parse_case("L3 Reason Code : X\nIssue/Summary : baris satu\nlanjut baris dua\n\nlanjut tiga\n"

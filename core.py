@@ -48,13 +48,15 @@ CASE_FIELDS = (("l3_reason_code", r"L3\s*Reason\s*Code"), ("session_id", r"Sessi
                ("issue", r"Issue\s*/?\s*Summary"), ("action", r"Action\s*Taken"))
 CORE_KEYS = ("l3_reason_code", "session_id", "case_id", "related_case", "hc")  # menentukan parse_status
 # Label lain: hanya sebagai PEMBATAS (isinya tidak disimpan)
-_STOP = (r"Data\s*Complaint", r"Username\s*Shopee", r"Nomor\s*Pesanan[^:\n]*", r"Thank\s*You")
+_STOP = (r"Data\s*(?:Complaint|User)", r"Username[^:\n]*", r"Nomor\s*Pesanan[^:\n]*", r"Thank\s*You", r"Terima\s*Kasih")
+# label pembatas yang menempel di tengah baris (mis. "...hasil tim kak Data User: Username Sosmed: x"): potong dari situ
+_CUT = re.compile(r"\s*\b(?:Data\s*(?:Complaint|User)\s*:|Username\s*\w*\s*:|Nomor\s*Pesanan[^:\n]*:).*$", re.I)
 MAX_FIELD_CHARS = 1500
 
 
 def parse_case(text: str) -> dict:
     """Ambil field template Agent. Nilai bisa lebih dari satu baris (diambil sampai label berikutnya).
-    Label Data Complaint/Username/Nomor Pesanan-Resi hanya jadi pembatas dan TIDAK disimpan.
+    Label Data Complaint/Data User/Username (Shopee/Sosmed)/Nomor Pesanan-Resi hanya jadi pembatas dan TIDAK disimpan.
     parse_status (OK/PARTIAL/NO_TEMPLATE) hanya dihitung dari 5 field inti."""
     out = {k: "" for k, _ in CASE_FIELDS}
     pats = [(k, re.compile(rf"^[ \t]*{p}[ \t]*:[ \t]*(.*)$", re.I)) for k, p in CASE_FIELDS]
@@ -63,7 +65,7 @@ def parse_case(text: str) -> dict:
 
     def flush():
         if cur and not out[cur]:
-            out[cur] = " ".join(x for x in buf if x).strip()[:MAX_FIELD_CHARS]
+            out[cur] = _CUT.sub("", " ".join(x for x in buf if x)).strip()[:MAX_FIELD_CHARS]
 
     for line in (text or "").replace("\r", "").split("\n"):
         hit = next(((k, m.group(1).strip()) for k, rx in pats for m in [rx.match(line)] if m), None)
