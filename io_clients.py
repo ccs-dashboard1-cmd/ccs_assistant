@@ -114,6 +114,11 @@ class Sheet:
     def read_tl_ids(self):
         return [str(r[0]).strip() for r in self.list_ws.get("D2:D13") if r and str(r[0]).strip()]
 
+    def read_reason_codes(self):
+        """Daftar L3 resmi: sheet 'Reason Code' kolom D (baris 2 ke bawah, otomatis mengikuti jumlah baris)."""
+        ws = self.sh.worksheet("Reason Code")
+        return [str(r[0]).strip() for r in ws.get("D2:D5000") if r and str(r[0]).strip()]
+
     def read_limit_minutes(self) -> float:
         try:
             return float(self.pilih.get("B15")[0][0])

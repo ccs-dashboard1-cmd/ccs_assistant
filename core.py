@@ -58,6 +58,96 @@ _IDS = ("session_id", "case_id", "related_case")  # berisi nomor panjang; teks t
 _NUM = re.compile(r"\d{10,}")
 
 
+# ---------- pencocok L3 Reason Code (logika sama dengan skrip Apps Script l3.gs) ----------
+_ZW = re.compile("[\u200b\u200c\u200d\ufeff\u00a0]")
+_SESS = re.compile(r"(?:session\s*id|season\s*id|sesi|case/session)", re.I)
+_L3_PREFIX = re.compile(r"^\s*(?:l3(?:\s*reason\s*code)?\s*[-:\u2013\u2014.)]*|[-\u2013\u2014\u2022*>\u00b7]+|\d+[.)])\s*", re.I)
+
+
+def _norm(s) -> str:
+    return re.sub(r"\s+", " ", _ZW.sub(" ", str(s))).strip().lower()
+
+
+def _clean(s) -> str:
+    """Buang Session ID yang menempel dan awalan seperti 'L3-', 'L3:', '-', '*', '1.' sebelum dicocokkan."""
+    t = _SESS.split(_ZW.sub(" ", str(s)))[0]
+    t = re.sub(r"\d{10,}", "", t)
+    for _ in range(4):
+        u = _L3_PREFIX.sub("", t, count=1)
+        if u == t:
+            break
+        t = u
+    return _norm(t)
+
+
+def _ratio(a: str, b: str) -> float:
+    la, lb = len(a), len(b)
+    if not la and not lb:
+        return 1.0
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        for j in range(1, lb + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+        prev = cur
+    return 1 - prev[lb] / max(la, lb)
+
+
+class L3Matcher:
+    """Cocokkan L3 dari agen ke daftar resmi (sheet 'Reason Code' kolom D).
+    match() -> (remarks, final): ('Sesuai', nama) | ('Dikoreksi', nama resmi) | ('Tidak cocok', '') | ('', '').
+    Diganti hanya bila SANGAT yakin (kemiripan >= 0,9 dan unggul >= 0,03 dari kandidat kedua)."""
+    AUTO = 0.9
+    MARGIN = 0.03
+
+    def __init__(self, names):
+        self.canon: dict = {}
+        for n in names:
+            n = str(n).strip()
+            if n and _norm(n) not in self.canon:
+                self.canon[_norm(n)] = n
+        self._cache: dict = {}
+
+    def __bool__(self):
+        return bool(self.canon)
+
+    def match(self, raw) -> tuple:
+        v = str(raw)
+        if not v.strip():
+            return "", ""
+        if v == self.canon.get(_norm(v)):
+            return "Sesuai", v
+        hit = self._best(v)
+        return ("Dikoreksi", hit) if hit else ("Tidak cocok", "")
+
+    def _best(self, v: str) -> str:
+        if v in self._cache:
+            return self._cache[v]
+        c = _clean(v)
+        hit = ""
+        if c:
+            if c in self.canon:
+                hit = self.canon[c]
+            else:
+                b1, b1k, b2 = 0.0, "", 0.0
+                for k in self.canon:
+                    lo, hi = sorted((len(c), len(k)))
+                    if hi == 0 or lo / hi < 0.87:   # tak mungkin cukup mirip: lewati (hemat waktu)
+                        continue
+                    s = _ratio(c, k)
+                    if s > b1:
+                        b1, b1k, b2 = s, k, b1
+                    elif s > b2:
+                        b2 = s
+                if b1 >= self.AUTO and b1 - b2 >= self.MARGIN:
+                    hit = self.canon[b1k]
+        if len(self._cache) > 2000:
+            self._cache.clear()
+        self._cache[v] = hit
+        return hit
+
+
+
 def parse_case(text: str) -> dict:
     """Ambil field template Agent. Nilai bisa lebih dari satu baris (diambil sampai label berikutnya).
     Label Data Complaint/Data User/Username (Shopee/Sosmed)/Nomor Pesanan-Resi hanya jadi pembatas dan TIDAK disimpan.
@@ -173,6 +263,9 @@ class Bot:
         self._tl_cache = (None, None)
         self._tl_ttl = tl_cache_seconds
         self.logged_cases: OrderedDict = OrderedDict()  # thread yang sudah dicatat ke CASE_LOG (anti dobel)
+        self._l3 = L3Matcher([])
+        self._l3_next = None  # kapan daftar Reason Code dimuat ulang
+        self._l3_ttl = 600
 
     # ---------- state ----------
     def load_state(self):
@@ -292,16 +385,39 @@ class Bot:
             return
         self.sheet.append_row([fmt_wib(now), "ASSIGNED", fmt_wib(now), tl, "", "0", inc.thread_key, inc.group_id])
 
+    def _l3_matcher(self, now: datetime) -> L3Matcher:
+        """Daftar Reason Code dimuat dari sheet dan disegarkan tiap 10 menit. Gagal -> pakai yang lama."""
+        if self._l3_next is None or now >= self._l3_next:
+            ok = False
+            try:
+                fn = getattr(self.sheet, "read_reason_codes", None)
+                names = fn() if fn else []
+                if names:
+                    self._l3, ok = L3Matcher(names), True
+            except Exception:
+                log.exception("baca Reason Code gagal (pakai daftar lama)")
+            self._l3_next = now + timedelta(seconds=self._l3_ttl if ok else 60)
+        return self._l3
+
     def _log_case(self, inc: Incoming, now: datetime):
-        """Catat isi template ke CASE_LOG (A-M). Kegagalan di sini TIDAK boleh mengganggu alur utama."""
+        """Catat isi template ke CASE_LOG (A-M, +N/O bila daftar Reason Code tersedia).
+        Kolom E = isi asli dari agen. N = Sesuai/Dikoreksi/Tidak cocok. O = L3 resmi.
+        Kegagalan di sini TIDAK boleh mengganggu alur utama."""
         try:
             c = parse_case(inc.text)
-            self.sheet.append_case([
+            row = [
                 fmt_wib(now), inc.thread_key, inc.group_id, inc.sender_id,   # A-D
                 c["l3_reason_code"], c["issue"], c["action"],                # E-G
                 inc.sender_email,                                            # H
                 c["session_id"], c["case_id"], c["related_case"], c["hc"],   # I-L
-                c["parse_status"]])                                          # M
+                c["parse_status"]]                                           # M
+            try:
+                m = self._l3_matcher(now)
+                if m:
+                    row += list(m.match(c["l3_reason_code"]))                # N, O
+            except Exception:
+                log.exception("cocokkan L3 gagal (diabaikan)")
+            self.sheet.append_case(row)
         except Exception:
             log.exception("catat CASE_LOG gagal (diabaikan)")
 

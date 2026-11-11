@@ -10,9 +10,14 @@ class Clock:
     def adv(s, sec): s.t += timedelta(seconds=sec)
 
 class FakeSheet:
-    def __init__(s, cands=("1", "2", "3", "4", "5", "6"), tls=("1", "2", "3", "4", "5", "6"), limit=1):
+    def __init__(s, cands=("1", "2", "3", "4", "5", "6"), tls=("1", "2", "3", "4", "5", "6"), limit=1, rc=()):
         s.cands, s.tls, s.limit, s.rows, s.log = list(cands), list(tls), limit, [], []
         s.cases = []
+        s.rc, s.rc_calls = (None if rc is None else list(rc)), 0
+    def read_reason_codes(s):
+        s.rc_calls += 1
+        if s.rc is None: raise RuntimeError("sheet down")
+        return list(s.rc)
     def read_candidates(s): return list(s.cands)
     def read_tl_ids(s): return list(s.tls)
     def read_limit_minutes(s): return s.limit
@@ -311,6 +316,70 @@ class TCase(unittest.TestCase):
     def test_status_ignores_issue_action(self):
         from core import parse_case
         self.assertEqual(parse_case("Issue/Summary : a\nAction Taken : b")["parse_status"], "NO_TEMPLATE")
+
+
+RC = ["Bagaimana cara membeli obat di Shopee?", "Chat Terputus", "Driver tidak menerima pesanan",
+      "Cek Status Pengembalian Dana", "Cek status klaim RTS"]
+
+def tpl(l3, extra=""):
+    return ("L3 Reason Code : %s\nSession ID : 2120000000000000001\nCase ID : 2120000000000000002\n"
+            "Related Case : -\nHC : #HCP1Test\nIssue/Summary : user kendala\nAction Taken : izin edu%s" % (l3, extra))
+
+class L3Tests(unittest.TestCase):
+    def case(self, l3, rc=RC):
+        b, c, s, a = mk(rc=rc)
+        b.on_event(ev("e1", "900", text=tpl(l3), email="a@x.com"), "mention")
+        return s.cases[0]
+
+    def test_exact_is_sesuai(self):
+        r = self.case("Chat Terputus")
+        self.assertEqual(len(r), 15); self.assertEqual(r[4], "Chat Terputus")
+        self.assertEqual(r[13:], ["Sesuai", "Chat Terputus"])
+
+    def test_prefix_l3_dash_and_bullet_corrected_but_E_untouched(self):
+        for raw in ("L3-Bagaimana cara membeli obat di Shopee?", "-Bagaimana cara membeli obat di Shopee?",
+                    "* bagaimana cara membeli obat di shopee?"):
+            r = self.case(raw)
+            self.assertEqual(r[4], raw)  # kolom E tetap seperti tulisan agen
+            self.assertEqual(r[13:], ["Dikoreksi", "Bagaimana cara membeli obat di Shopee?"])
+
+    def test_session_id_stuck_and_small_typo(self):
+        self.assertEqual(self.case("Chat TerputusSession ID: 2120380236574072904")[13:], ["Dikoreksi", "Chat Terputus"])
+        self.assertEqual(self.case("Driver tidak menerima pesnaan")[13:], ["Dikoreksi", "Driver tidak menerima pesanan"])
+
+    def test_not_in_list_left_alone(self):
+        for raw in ("junk", "First contact", "Analisa case", "-"):
+            r = self.case(raw)
+            self.assertEqual(r[4], raw); self.assertEqual(r[13:], ["Tidak cocok", ""])
+
+    def test_ambiguous_not_auto(self):
+        # mirip dua kandidat -> jangan ditebak
+        r = self.case("Cek status pengajuan dispute")
+        self.assertEqual(r[13:], ["Tidak cocok", ""])
+
+    def test_empty_l3_no_remark(self):
+        b, c, s, a = mk(rc=RC)
+        b.on_event(ev("e1", "900", text="halo saja"), "mention")
+        self.assertEqual(s.cases[0][13:], ["", ""])
+
+    def test_no_reason_code_list_keeps_13_columns(self):
+        r = self.case("Chat Terputus", rc=[])
+        self.assertEqual(len(r), 13)
+
+    def test_sheet_error_never_blocks_case_or_card(self):
+        b, c, s, a = mk(rc=None)
+        b.on_event(ev("e1", "900", text=tpl("Chat Terputus")), "mention")
+        self.assertEqual(len(s.cases), 1); self.assertEqual(len(s.cases[0]), 13); self.assertEqual(len(a.sent), 1)
+
+    def test_list_cached_and_refreshed(self):
+        b, c, s, a = mk(rc=RC)
+        b.on_event(ev("e1", "900", msg="m1", text=tpl("Chat Terputus")), "mention")
+        b.on_event(ev("e2", "901", msg="m2", text=tpl("Chat Terputus")), "mention")
+        self.assertEqual(s.rc_calls, 1)
+        c.adv(601 )
+        s.rc.append("Mengubah nomor handphone")
+        b.on_event(ev("e3", "902", msg="m3", text=tpl("Mengubah nomor handphone")), "mention")
+        self.assertEqual(s.rc_calls, 2); self.assertEqual(s.cases[2][13:], ["Sesuai", "Mengubah nomor handphone"])
 
 
 if __name__ == "__main__":
