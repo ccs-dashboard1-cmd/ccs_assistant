@@ -10,10 +10,12 @@ class Clock:
     def adv(s, sec): s.t += timedelta(seconds=sec)
 
 class FakeSheet:
-    def __init__(s, cands=("1", "2", "3", "4", "5", "6"), tls=("1", "2", "3", "4", "5", "6"), limit=1, rc=()):
+    def __init__(s, cands=("1", "2", "3", "4", "5", "6"), tls=("1", "2", "3", "4", "5", "6"), limit=1, rc=(), hcs=()):
         s.cands, s.tls, s.limit, s.rows, s.log = list(cands), list(tls), limit, [], []
         s.cases = []
         s.rc, s.rc_calls = (None if rc is None else list(rc)), 0
+        s.hcs = list(hcs)
+    def read_hc_list(s): return list(s.hcs)
     def read_reason_codes(s):
         s.rc_calls += 1
         if s.rc is None: raise RuntimeError("sheet down")
@@ -380,6 +382,51 @@ class L3Tests(unittest.TestCase):
         s.rc.append("Mengubah nomor handphone")
         b.on_event(ev("e3", "902", msg="m3", text=tpl("Mengubah nomor handphone")), "mention")
         self.assertEqual(s.rc_calls, 2); self.assertEqual(s.cases[2][13:], ["Sesuai", "Mengubah nomor handphone"])
+
+
+HCS = ["#HCP1SocialMedia", "#HCP1LembagaKonsumen/Pemerintah", "#HCP1SensitiveCase", "#HCP1SensitiveCaseSellerProgram",
+       "#HCP2UninstallShopee", "#HCP2PindahAplikasi", "#HCP3BerkataKasar", "#HCP3Capslock"]
+
+def tpl_hc(hc):
+    return ("L3 Reason Code : Chat Terputus\nSession ID : 2120000000000000001\nCase ID : 2120000000000000002\n"
+            "Related Case : -\nHC : %s\nIssue/Summary : user kendala\nAction Taken : izin edu" % hc)
+
+class HcTests(unittest.TestCase):
+    def row(self, hc, hcs=HCS, rc=RC):
+        b, c, s, a = mk(rc=rc, hcs=hcs)
+        b.on_event(ev("e1", "900", text=tpl_hc(hc)), "mention")
+        return s.cases[0]
+
+    def test_exact_and_case_variants(self):
+        for raw in ("#HCP3Capslock", "HCP3CapsLock", "#hcp3capslock", "#HCP 3 Caps lock", "(#HCP3Capslock)"):
+            r = self.row(raw)
+            self.assertEqual(len(r), 16); self.assertEqual(r[15], "#HCP3Capslock")
+
+    def test_typo_and_partial_name(self):
+        self.assertEqual(self.row("#HCP3Capskock")[15], "#HCP3Capslock")
+        self.assertEqual(self.row("HCP1lembagapemerintah")[15], "#HCP1LembagaKonsumen/Pemerintah")
+        self.assertEqual(self.row("HCP3berkatakasar")[15], "#HCP3BerkataKasar")
+
+    def test_original_hc_kept_in_L(self):
+        r = self.row("hcp3berkatakasar")
+        self.assertEqual(r[11], "hcp3berkatakasar")
+
+    def test_not_hc_or_wrong_level_blank(self):
+        for raw in ("No", "-", "#No", "No Details: Termasuk kriteria kasus eligible Force Close", "HCP3",
+                    "#HCP1Capslock", "(Isi dengan format #HCP1SocialMedia)"):
+            self.assertEqual(self.row(raw)[15], "", raw)
+
+    def test_exact_prefers_exact_over_longer_prefix(self):
+        self.assertEqual(self.row("#HCP1SensitiveCase")[15], "#HCP1SensitiveCase")
+        self.assertEqual(self.row("#HCP1SensitiveCaseSellerProgram")[15], "#HCP1SensitiveCaseSellerProgram")
+
+    def test_no_hc_list_keeps_n_o_only(self):
+        r = self.row("#HCP3Capslock", hcs=[])
+        self.assertEqual(len(r), 15)
+
+    def test_hc_list_without_l3_list_pads_n_o(self):
+        r = self.row("#HCP3Capslock", rc=[])
+        self.assertEqual(len(r), 16); self.assertEqual(r[13:15], ["", ""]); self.assertEqual(r[15], "#HCP3Capslock")
 
 
 if __name__ == "__main__":

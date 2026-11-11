@@ -148,6 +148,58 @@ class L3Matcher:
 
 
 
+def _hc_norm(s) -> str:
+    return re.sub(r"[^a-z0-9]", "", _ZW.sub(" ", str(s)).lower())
+
+
+_HC_TOKEN = re.compile(r"hcp\s*([1-3])([^,;\n(]*)", re.I)
+
+
+class HcMatcher:
+    """Cocokkan HC dari agen ke 'LIST HARD COMPLAINT' (sheet 'RC & HC' kolom F); level HCP harus sama.
+    match() -> nama HC resmi, atau '' bila tidak cocok / bukan HC. Logika sama dengan skrip Apps Script l3.gs."""
+
+    def __init__(self, names):
+        self.canon: dict = {}
+        for n in names:
+            n = str(n).strip()
+            if n and _hc_norm(n) not in self.canon:
+                self.canon[_hc_norm(n)] = n
+
+    def __bool__(self):
+        return bool(self.canon)
+
+    def match(self, raw) -> str:
+        raw = str(raw)
+        if re.search(r"isi\s+dengan\s+format", raw, re.I):
+            return ""  # teks petunjuk template, bukan jawaban
+        m = _HC_TOKEN.search(raw)
+        if not m:
+            return ""
+        n = _hc_norm("hcp" + m.group(1) + m.group(2))
+        if n in self.canon:
+            return self.canon[n]
+        lvl = "hcp" + m.group(1)
+        cand = [k for k in self.canon if k.startswith(lvl)]
+        pre = ""
+        for k in cand:
+            if len(k) >= 8 and n.startswith(k) and len(k) > len(pre):
+                pre = k
+        if pre:
+            return self.canon[pre]
+        b1, b1k, b2 = 0.0, "", 0.0
+        for k in cand:
+            s = _ratio(n, k)
+            if s > b1:
+                b1, b1k, b2 = s, k, b1
+            elif s > b2:
+                b2 = s
+        if b1 >= 0.65 and b1 - b2 >= 0.15:
+            return self.canon[b1k]
+        return ""
+
+
+
 def parse_case(text: str) -> dict:
     """Ambil field template Agent. Nilai bisa lebih dari satu baris (diambil sampai label berikutnya).
     Label Data Complaint/Data User/Username (Shopee/Sosmed)/Nomor Pesanan-Resi hanya jadi pembatas dan TIDAK disimpan.
@@ -264,6 +316,7 @@ class Bot:
         self._tl_ttl = tl_cache_seconds
         self.logged_cases: OrderedDict = OrderedDict()  # thread yang sudah dicatat ke CASE_LOG (anti dobel)
         self._l3 = L3Matcher([])
+        self._hc = HcMatcher([])
         self._l3_next = None  # kapan daftar Reason Code dimuat ulang
         self._l3_ttl = 600
 
@@ -396,12 +449,19 @@ class Bot:
                     self._l3, ok = L3Matcher(names), True
             except Exception:
                 log.exception("baca Reason Code gagal (pakai daftar lama)")
+            try:
+                fn = getattr(self.sheet, "read_hc_list", None)
+                hcs = fn() if fn else []
+                if hcs:
+                    self._hc = HcMatcher(hcs)
+            except Exception:
+                log.exception("baca daftar HC gagal (pakai daftar lama)")
             self._l3_next = now + timedelta(seconds=self._l3_ttl if ok else 60)
         return self._l3
 
     def _log_case(self, inc: Incoming, now: datetime):
-        """Catat isi template ke CASE_LOG (A-M, +N/O bila daftar Reason Code tersedia).
-        Kolom E = isi asli dari agen. N = Sesuai/Dikoreksi/Tidak cocok. O = L3 resmi.
+        """Catat isi template ke CASE_LOG (A-M, +N/O/P bila daftar RC & HC tersedia).
+        Kolom E = isi asli dari agen. N = Sesuai/Dikoreksi/Tidak cocok. O = L3 resmi. P = HC resmi.
         Kegagalan di sini TIDAK boleh mengganggu alur utama."""
         try:
             c = parse_case(inc.text)
@@ -413,10 +473,15 @@ class Bot:
                 c["parse_status"]]                                           # M
             try:
                 m = self._l3_matcher(now)
-                if m:
-                    row += list(m.match(c["l3_reason_code"]))                # N, O
+                no = list(m.match(c["l3_reason_code"])) if m else None       # N, O
+                hc = self._hc.match(c["hc"]) if self._hc else None           # P
+                if hc is not None:
+                    row += (no or ["", ""]) + [hc]
+                elif no is not None:
+                    row += no
             except Exception:
-                log.exception("cocokkan L3 gagal (diabaikan)")
+                log.exception("cocokkan L3/HC gagal (diabaikan)")
+                del row[13:]
             self.sheet.append_case(row)
         except Exception:
             log.exception("catat CASE_LOG gagal (diabaikan)")

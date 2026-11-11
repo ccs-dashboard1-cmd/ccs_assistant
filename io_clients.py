@@ -114,10 +114,26 @@ class Sheet:
     def read_tl_ids(self):
         return [str(r[0]).strip() for r in self.list_ws.get("D2:D13") if r and str(r[0]).strip()]
 
+    RC_GID = 794154378  # tab "RC & HC" (dulu "Reason Code"); dicari lewat ID agar aman bila diganti nama
+
+    def _rc_ws(self):
+        try:
+            return self.sh.get_worksheet_by_id(self.RC_GID)
+        except Exception:
+            for name in ("RC & HC", "Reason Code"):
+                try:
+                    return self.sh.worksheet(name)
+                except Exception:
+                    pass
+            raise
+
     def read_reason_codes(self):
-        """Daftar L3 resmi: sheet 'Reason Code' kolom D (baris 2 ke bawah, otomatis mengikuti jumlah baris)."""
-        ws = self.sh.worksheet("Reason Code")
-        return [str(r[0]).strip() for r in ws.get("D2:D5000") if r and str(r[0]).strip()]
+        """Daftar L3 resmi: kolom D (baris 2 ke bawah, otomatis mengikuti jumlah baris)."""
+        return [str(r[0]).strip() for r in self._rc_ws().get("D2:D5000") if r and str(r[0]).strip()]
+
+    def read_hc_list(self):
+        """Daftar HC resmi ('LIST HARD COMPLAINT'): kolom F baris 2 ke bawah."""
+        return [str(r[0]).strip() for r in self._rc_ws().get("F2:F500") if r and str(r[0]).strip()]
 
     def read_limit_minutes(self) -> float:
         try:
