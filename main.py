@@ -1,6 +1,7 @@
 """Titik masuk: jalankan dengan `python main.py`. Rahasia dari environment saja."""
 import logging
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -14,6 +15,7 @@ log = logging.getLogger("ccs")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1hqaCHLZYGX-oN4yWIcK7UbXMpXW7I0913409k3Jq-YQ")
 TICK_SECONDS = 15
 UPDATE_CHECK_SECONDS = 300
+NET_CHECK_SECONDS = 10
 
 
 def _git(*args):
@@ -43,6 +45,34 @@ def update_watcher(sheet):
             log.exception("cek update gagal")
 
 
+def net_watchdog(sheet):
+    """Pantau koneksi internet. Bila sempat putus lalu pulih, restart proses supaya
+    WebSocket SeaTalk disambung ulang dari nol (SDK tidak selalu menyambung sendiri,
+    dan koneksi yang mati diam-diam tidak membuat client.run() berhenti).
+    JALANKAN_BOT.bat otomatis menyalakan ulang bot setelah proses keluar."""
+    down_since = None
+    while True:
+        time.sleep(NET_CHECK_SECONDS)
+        try:
+            socket.create_connection(("openapi.seatalk.io", 443), timeout=4).close()
+            ok = True
+        except OSError:
+            ok = False
+        if not ok:
+            if down_since is None:
+                down_since = time.time()
+                log.warning("koneksi internet terputus")
+            continue
+        if down_since is not None:
+            log.warning("koneksi pulih setelah %d detik, restart untuk sambung ulang", time.time() - down_since)
+            for _ in range(60):  # beri waktu antrean tulis sheet habis
+                if sheet.q.empty():
+                    break
+                time.sleep(1)
+            time.sleep(2)
+            os._exit(3)
+
+
 def main():
     from seatalk_oapi_sdk import Client, EventDispatcher  # dari halaman SDK portal SeaTalk
 
@@ -62,6 +92,7 @@ def main():
 
     threading.Thread(target=ticker, daemon=True, name="escalation").start()
     threading.Thread(target=update_watcher, args=(sheet,), daemon=True, name="updater").start()
+    threading.Thread(target=net_watchdog, args=(sheet,), daemon=True, name="netwatch").start()
 
     dispatcher = (
         EventDispatcher()
@@ -71,8 +102,10 @@ def main():
     client = Client(app_id=app_id, app_secret=app_secret, dispatcher=dispatcher)
     try:
         client.run()
+        log.error("client.run() berhenti sendiri (koneksi putus?), keluar agar di-restart")
     finally:
         client.close()
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":
