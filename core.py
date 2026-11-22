@@ -228,10 +228,10 @@ def parse_case(text: str) -> dict:
         nums = _NUM.findall(out[k])
         if nums:
             out[k] = ", ".join(nums)
-    if not out["hc"]:
-        m = re.search(r"(?i)\bHCP\s*\d+\b", text or "")
+    if not out["hc"] or re.fullmatch(r"[\s\-–—.]*|(?i:n/?a|tidak ada|none|nihil)", out["hc"]):
+        m = re.search(r"(?i)\bHCP\s*\d+[^\s,;#()]*", text or "")  # termasuk '#HCP1Lembagapemerintah' yg ditulis di Issue
         if m:
-            out["hc"] = m.group(0).replace(" ", "").upper()
+            out["hc"] = m.group(0)
     filled = sum(1 for k in CORE_KEYS if out[k])
     out["parse_status"] = "NO_TEMPLATE" if filled == 0 else ("OK" if filled == len(CORE_KEYS) else "PARTIAL")
     return out
@@ -304,9 +304,10 @@ class Bot:
     api: objek dengan send_card(group_id, thread_id, text_md) -> bool.
     """
 
-    def __init__(self, sheet, api, clock=None, own_ids=(), tl_cache_seconds=30):
+    def __init__(self, sheet, api, clock=None, own_ids=(), tl_cache_seconds=30, kasus_async=True):
         self.sheet = sheet
         self.api = api
+        self.kasus_async = kasus_async  # baca sheet backup di thread terpisah agar alur utama tidak tertahan
         self.clock = clock or (lambda: datetime.now(WIB))
         self.own_ids = {str(i) for i in own_ids if i}
         self.threads: dict[tuple, ThreadState] = {}
@@ -392,11 +393,41 @@ class Bot:
         if not inc.group_id or not inc.sender_id:
             return
         key = (inc.thread_key, inc.group_id)
+        if inc.kind == "mention" and self._handle_kasus(inc):
+            return  # permintaan data kasus: dijawab, bukan kasus assist baru
         if inc.sender_id in self._tl_ids():
             self._handle_tl(inc, key)
         elif inc.kind == "mention":
             self._handle_human(inc, key)
         # pesan thread dari non-TL tanpa mention: diabaikan
+
+    def _handle_kasus(self, inc: Incoming) -> bool:
+        """'tolong data <agen> periode .. untuk RC ..' -> balas daftar kasus dari file backup. True bila ditangani."""
+        from kasus import parse_request
+        req = parse_request(inc.text, self.clock().date())
+        if req is None:
+            return False
+        if self.kasus_async:
+            threading.Thread(target=self._jawab_kasus, args=(inc, req), daemon=True, name="kasus").start()
+        else:
+            self._jawab_kasus(inc, req)
+        return True
+
+    def _jawab_kasus(self, inc: Incoming, req):
+        from kasus import tab_names, select, format_reply
+        try:
+            rows = []
+            for tab in tab_names(req.start, req.end):
+                rows += self.sheet.read_backup(tab)
+            emails, picked = select(rows, req)
+            text = format_reply(req, emails, picked)
+        except Exception:
+            log.exception("ambil data kasus gagal")
+            text = "Maaf, data kasus belum bisa diambil saat ini. Coba lagi sebentar lagi."
+        try:
+            self.api.send_card(inc.group_id, inc.thread_key, text)
+        except Exception:
+            log.exception("kirim jawaban data kasus gagal")
 
     def _handle_human(self, inc: Incoming, key):
         with self.lock:
@@ -475,6 +506,11 @@ class Bot:
                 m = self._l3_matcher(now)
                 no = list(m.match(c["l3_reason_code"])) if m else None       # N, O
                 hc = self._hc.match(c["hc"]) if self._hc else None           # P
+                if self._hc and not hc:  # HC kosong / tidak cocok -> cek token #HCP... di Issue
+                    for t in re.findall(r"(?i)\bHCP\s*\d+[^\s,;#()]*", c["issue"] or ""):
+                        hc = self._hc.match(t)
+                        if hc:
+                            break
                 if hc is not None:
                     row += (no or ["", ""]) + [hc]
                 elif no is not None:
